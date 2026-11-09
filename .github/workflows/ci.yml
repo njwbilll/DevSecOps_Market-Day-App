@@ -75,17 +75,9 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
-          
-      - name: Trivy, image nginx
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: market-day-nginx
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
-          # Sertifikat self-signed demo dibuat saat build, bukan secret produksi.
+          # Sertifikat self-signed demo dibuat saat build (frontend/Dockerfile), bukan secret produksi.
           skip-files: /etc/nginx/certs/selfsigned.key
-          
+
   # DAST: hanya melapor (ZAP dengan -I), dijalankan setelah Trivy lolos.
   dast:
     needs: trivy
