@@ -30,8 +30,8 @@ jobs:
           languages: javascript-typescript
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
 
-  # Build image lalu pindai dengan Trivy. Trivy menghentikan pipeline jika ada High/Critical yang sudah ada perbaikannya.
-  build-trivy:
+  # Build image Docker. Gagal jika lockfile hilang atau Dockerfile bermasalah.
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,6 +43,19 @@ jobs:
 
       - name: Pastikan lockfile backend ada
         run: test -f backend/package-lock.json
+
+      - name: Build image Docker
+        run: docker compose build
+
+  # Trivy menghentikan pipeline jika ada High/Critical yang sudah ada perbaikannya.
+  trivy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Siapkan .env
+        run: cp .env.example .env
 
       - name: Build image Docker
         run: docker compose build
@@ -65,7 +78,7 @@ jobs:
 
   # DAST: hanya melapor (ZAP dengan -I), dijalankan setelah Trivy lolos.
   dast:
-    needs: build-trivy
+    needs: trivy
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 20
@@ -79,7 +92,7 @@ jobs:
           docker compose up -d --build
           for _ in $(seq 1 40); do curl -ksf https://localhost/api/health >/dev/null && break; sleep 3; done
 
-      - name: OWASP ZAP baseline
+      - name: OWASP ZAP baseline (hanya melapor)
         run: |
           mkdir -p zap-report && chmod 777 zap-report
           docker run --rm --network host -v "$PWD/zap-report:/zap/wrk:rw" \
