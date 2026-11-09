@@ -1,5 +1,5 @@
 FROM node:24-alpine
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl && npm install -g npm@11.21.2
 WORKDIR /app
 
 COPY package*.json ./
