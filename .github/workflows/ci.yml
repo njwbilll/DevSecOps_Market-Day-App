@@ -4,71 +4,99 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Run baru pada PR yang sama membatalkan yang lama. Run pada main tidak dibatalkan.
+concurrency:
+  group: ci-devsecops-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
-  build:
+  # SAST: hanya melapor ke tab Security (sesuai PRD), tidak menghentikan pipeline.
+  sast:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+
+  # Build image lalu pindai dengan Trivy. Trivy menghentikan pipeline jika ada High/Critical yang sudah ada perbaikannya.
+  build-trivy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Siapkan .env untuk pipeline
         run: |
           cp .env.example .env
           sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/" .env
+
+      - name: Pastikan lockfile backend ada
+        run: test -f backend/package-lock.json
+
       - name: Build image Docker
         run: docker compose build
 
-  sast:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
-        with:
-          languages: javascript-typescript
-      - uses: github/codeql-action/analyze@v3
-
-  trivy:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Siapkan .env
-        run: cp .env.example .env
-      - run: docker compose build
-      - name: Scan image backend
-        uses: aquasecurity/trivy-action@0.28.0
+      - name: Trivy, image backend
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: market-day-backend
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
-      - name: Scan image nginx
-        uses: aquasecurity/trivy-action@0.28.0
+
+      - name: Trivy, image nginx
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: market-day-nginx
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
 
+  # DAST: hanya melapor (ZAP dengan -I), dijalankan setelah Trivy lolos.
   dast:
-    needs: [build, sast, trivy]
+    needs: build-trivy
     runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Jalankan aplikasi
         run: |
           cp .env.example .env
           sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/" .env
           docker compose up -d --build
-          for i in $(seq 1 30); do curl -ksf https://localhost/api/health && break; sleep 3; done
+          for _ in $(seq 1 40); do curl -ksf https://localhost/api/health >/dev/null && break; sleep 3; done
+
       - name: OWASP ZAP baseline
-        uses: zaproxy/action-baseline@v0.14.0
+        run: |
+          mkdir -p zap-report && chmod 777 zap-report
+          docker run --rm --network host -v "$PWD/zap-report:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py -t https://localhost -r report.html -I
+
+      - name: Unggah laporan ZAP
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          target: https://localhost
-          cmd_options: -I
+          name: zap-report
+          path: zap-report
+          if-no-files-found: ignore
+
+      - name: Log aplikasi jika gagal
+        if: failure()
+        run: docker compose logs --tail=100
+
       - name: Hentikan aplikasi
         if: always()
         run: docker compose down -v
