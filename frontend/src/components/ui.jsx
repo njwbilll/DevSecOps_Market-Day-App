@@ -4,9 +4,9 @@ import { dateTime, rupiah } from '../format.js';
 import Icon from './Icon.jsx';
 
 const STATUS = {
-  PENDING: ['Menunggu', 'badge-wait'],
+  PENDING: ['Belum dibayar', 'badge-wait'],
   SUCCESS: ['Berhasil', 'badge-ok'],
-  REJECTED: ['Ditolak', 'badge-no'],
+  REJECTED: ['Gagal', 'badge-no'],
 };
 
 export function Badge({ status }) {

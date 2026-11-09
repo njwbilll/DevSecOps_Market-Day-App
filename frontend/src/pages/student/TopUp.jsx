@@ -1,70 +1,57 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../../auth.jsx';
 import { api, errText } from '../../api.js';
 import { dateTime, rupiah } from '../../format.js';
 import { Alert, Badge, Empty, Field, PageHead } from '../../components/ui.jsx';
 
 const QUICK = [20000, 50000, 100000, 200000];
+const METHOD = { BANK: 'Transfer bank (virtual account)', EWALLET: 'E-wallet' };
 
 export default function TopUp() {
   const { refresh } = useAuth();
-  const fileRef = useRef(null);
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState('BANK');
-  const [file, setFile] = useState(null);
-  const [preview, setPreview] = useState(null);
   const [list, setList] = useState(null);
+  const [sandbox, setSandbox] = useState(false);
   const [error, setError] = useState('');
-  const [ok, setOk] = useState('');
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState('');
 
-  const load = () => api.get('/topups').then((d) => setList(d.items)).catch(() => setList([]));
+  const load = () =>
+    api
+      .get('/topups')
+      .then((d) => {
+        setList(d.items);
+        setSandbox(d.sandbox);
+        return d.items;
+      })
+      .catch(() => setList([]));
+
   useEffect(() => { load(); }, []);
 
+  // Selama ada tagihan yang belum dibayar, cek status berkala. Saldo diperbarui otomatis.
+  const hasPending = list?.some((t) => t.status === 'PENDING');
   useEffect(() => {
-    if (!file) return setPreview(null);
-    const url = URL.createObjectURL(file);
-    setPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
-
-  function pick(e) {
-    const f = e.target.files?.[0];
-    setError('');
-    if (!f) return setFile(null);
-    if (!['image/jpeg', 'image/png', 'image/webp'].includes(f.type)) {
-      setError('File harus berupa gambar JPG, PNG, atau WEBP');
-      return setFile(null);
-    }
-    if (f.size > 2 * 1024 * 1024) {
-      setError('Ukuran file maksimal 2 MB');
-      return setFile(null);
-    }
-    setFile(f);
-  }
+    if (!hasPending) return;
+    const id = setInterval(() => {
+      load().then((items) => {
+        if (items && !items.some((t) => t.status === 'PENDING')) refresh().catch(() => {});
+      });
+    }, 4000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasPending]);
 
   async function submit(e) {
     e.preventDefault();
     setError('');
-    setOk('');
     const value = Number(amount);
     if (!Number.isInteger(value) || value < 10000) return setError('Minimal top up Rp10.000');
-    if (!file) return setError('Unggah bukti transfer terlebih dahulu');
-
-    const form = new FormData();
-    form.append('amount', String(value));
-    form.append('method', method);
-    form.append('proof', file);
-
     setBusy(true);
     try {
-      await api.upload('/topups', form);
-      setOk('Pengajuan terkirim. Saldo bertambah setelah admin memverifikasi.');
+      await api.post('/topups', { amount: value, method });
       setAmount('');
-      setFile(null);
-      if (fileRef.current) fileRef.current.value = '';
-      load();
-      refresh().catch(() => {});
+      await load();
     } catch (x) {
       setError(errText(x));
     } finally {
@@ -72,13 +59,33 @@ export default function TopUp() {
     }
   }
 
+  async function simulate(t) {
+    setError('');
+    try {
+      await api.post(`/topups/${t.id}/simulate-pay`);
+      await load();
+      refresh().catch(() => {});
+    } catch (x) {
+      setError(errText(x));
+    }
+  }
+
+  async function copy(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(text);
+      setTimeout(() => setCopied(''), 1500);
+    } catch {
+      /* clipboard tidak tersedia */
+    }
+  }
+
   return (
     <>
-      <PageHead title="Top up saldo" sub="Transfer ke rekening panitia, lalu unggah bukti transfernya." />
+      <PageHead title="Top up saldo" sub="Buat tagihan, bayar lewat bank atau e-wallet. Saldo bertambah otomatis setelah pembayaran terkonfirmasi." />
 
       <form className="card card-white stack" onSubmit={submit}>
         <Alert>{error}</Alert>
-        <Alert kind="ok">{ok}</Alert>
 
         <Field label="Nominal" hint={amount ? rupiah(amount) : 'Minimal Rp10.000, maksimal Rp1.000.000'}>
           <input
@@ -97,39 +104,51 @@ export default function TopUp() {
           ))}
         </div>
 
-        <Field label="Metode">
+        <Field label="Metode pembayaran">
           <div className="chips">
             <button type="button" className={`chip ${method === 'BANK' ? 'on' : ''}`} onClick={() => setMethod('BANK')}>Transfer bank</button>
             <button type="button" className={`chip ${method === 'EWALLET' ? 'on' : ''}`} onClick={() => setMethod('EWALLET')}>E-wallet</button>
           </div>
         </Field>
 
-        <Field label="Bukti transfer" hint="JPG, PNG, atau WEBP, maksimal 2 MB">
-          <input ref={fileRef} className="input input-file" type="file" accept="image/jpeg,image/png,image/webp" onChange={pick} />
-        </Field>
-        {preview && <img className="proof-preview" src={preview} alt="Pratinjau bukti transfer" />}
-
-        <button className="btn btn-black btn-block" disabled={busy}>{busy ? 'Mengirim...' : 'Kirim pengajuan'}</button>
+        <button className="btn btn-black btn-block" disabled={busy}>{busy ? 'Membuat tagihan...' : 'Buat tagihan'}</button>
       </form>
 
       <section className="card card-white">
-        <div className="card-head"><h2>Pengajuan saya</h2></div>
+        <div className="card-head"><h2>Tagihan dan riwayat top up</h2></div>
         {list === null ? (
           <div className="img-skeleton" />
         ) : list.length === 0 ? (
-          <Empty title="Belum ada pengajuan" text="Pengajuan top up kamu akan muncul di sini." />
+          <Empty title="Belum ada top up" text="Tagihan top up kamu akan muncul di sini." />
         ) : (
           <ul className="list">
             {list.map((t) => (
-              <li key={t.id} className="row">
-                <span className="row-main">
-                  <span className="row-title">{rupiah(t.amount)}</span>
-                  <span className="row-sub">
-                    {dateTime(t.createdAt)} &middot; {t.method === 'BANK' ? 'Transfer bank' : 'E-wallet'}
-                    {t.adminNote ? ` · ${t.adminNote}` : ''}
+              <li key={t.id} className={`bill ${t.status === 'PENDING' ? 'bill-open' : ''}`}>
+                <div className="bill-top">
+                  <span className="row-main">
+                    <span className="row-title">{rupiah(t.amount)}</span>
+                    <span className="row-sub">{dateTime(t.createdAt)} &middot; {METHOD[t.method]}</span>
                   </span>
-                </span>
-                <Badge status={t.status} />
+                  <Badge status={t.status === 'PENDING' ? 'PENDING' : t.status} />
+                </div>
+
+                {t.status === 'PENDING' && (
+                  <div className="bill-pay">
+                    <span className="row-sub">{t.method === 'BANK' ? 'Nomor virtual account' : 'Kode pembayaran e-wallet'}</span>
+                    <div className="bill-code">
+                      <strong>{t.paymentCode || t.reference}</strong>
+                      <button type="button" className="btn btn-white btn-sm" onClick={() => copy(t.paymentCode || t.reference)}>
+                        {copied === (t.paymentCode || t.reference) ? 'Tersalin' : 'Salin'}
+                      </button>
+                    </div>
+                    <span className="row-sub">Bayar tepat {rupiah(t.amount)}. Status berubah otomatis setelah pembayaran diterima.</span>
+                    {sandbox && (
+                      <button type="button" className="btn btn-red btn-sm" onClick={() => simulate(t)}>
+                        Simulasikan pembayaran berhasil (sandbox)
+                      </button>
+                    )}
+                  </div>
+                )}
               </li>
             ))}
           </ul>

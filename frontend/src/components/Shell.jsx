@@ -14,7 +14,7 @@ const NAV = {
     { to: '/merchant/pembukuan', label: 'Pembukuan', icon: 'book' },
   ],
   ADMIN: [
-    { to: '/admin', label: 'Verifikasi', icon: 'check', end: true },
+    { to: '/admin', label: 'Top up', icon: 'check', end: true },
     { to: '/admin/laporan', label: 'Laporan', icon: 'chart' },
     { to: '/admin/merchant', label: 'Merchant', icon: 'store' },
   ],

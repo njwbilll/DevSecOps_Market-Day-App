@@ -56,13 +56,15 @@ model Transaction {
   status       TxStatus
   amount       Int
   method       String?
+  reference    String?   @unique // ID tagihan di payment gateway (dipakai webhook untuk mencocokkan)
+  paymentCode  String?   // kode pembayaran yang ditampilkan: virtual account atau kode e-wallet
   note         String?
   adminNote    String?
-  proofPath    String?
+  proofPath    String? // tidak dipakai lagi
   studentId    String
   merchantId   String?
   verifiedById String?
-  verifiedAt   DateTime?
+  verifiedAt   DateTime? // waktu pembayaran terkonfirmasi otomatis
   createdAt    DateTime  @default(now())
 
   student  User  @relation("StudentTx", fields: [studentId], references: [id])
@@ -72,4 +74,30 @@ model Transaction {
   @@index([studentId, createdAt])
   @@index([merchantId, createdAt])
   @@index([type, status])
+}
+
+// Audit log webhook payment gateway (append-only, dijaga trigger di hardening.sql)
+model WebhookLog {
+  id             String   @id @default(uuid())
+  createdAt      DateTime @default(now())
+  ip             String
+  signatureValid Boolean
+  reference      String?
+  rawBody        String
+  result         String
+
+  @@index([createdAt])
+  @@index([reference])
+}
+
+// Audit log aksi sensitif admin (append-only)
+model AdminLog {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  adminId   String
+  action    String
+  detail    String?
+  ip        String?
+
+  @@index([createdAt])
 }

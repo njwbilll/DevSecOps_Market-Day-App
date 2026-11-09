@@ -246,3 +246,13 @@ small { font-size: 13px; }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* ---------- Tagihan top up ---------- */
+.bill { background: var(--tint-soft); border-radius: var(--r-md); padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.bill-open { background: var(--tint); border: 2px solid var(--black); }
+.bill-top { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
+.bill-pay { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.bill-code { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; background: var(--black); color: var(--white); border-radius: var(--r-md); padding: 10px 10px 10px 16px; }
+.bill-code strong { font-size: 20px; letter-spacing: .04em; word-break: break-all; }
+
+.note { font-size: 13px; color: var(--muted); margin-bottom: 12px; }

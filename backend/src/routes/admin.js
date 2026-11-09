@@ -2,67 +2,37 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '../db.js';
-import { HttpError, csvCell, dateRange } from '../utils.js';
+import { csvCell, dateRange } from '../utils.js';
+import { logAdmin } from '../services/audit.js';
 
 const router = Router();
 
-// ---------- Verifikasi top up ----------
-const listSchema = z.object({ status: z.enum(['PENDING', 'SUCCESS', 'REJECTED', 'ALL']).default('PENDING') });
+// ---------- Pembukuan top up (otomatis, hanya dibaca) ----------
+const listSchema = z.object({ status: z.enum(['PENDING', 'SUCCESS', 'REJECTED', 'ALL']).default('SUCCESS') });
 
 router.get('/topups', async (req, res) => {
   const { status } = listSchema.parse(req.query);
-  const items = await prisma.transaction.findMany({
-    where: { type: 'TOPUP', status: status === 'ALL' ? undefined : status },
-    orderBy: { createdAt: status === 'PENDING' ? 'asc' : 'desc' },
-    take: 100,
-    select: {
-      id: true,
-      receiptNo: true,
-      status: true,
-      amount: true,
-      method: true,
-      adminNote: true,
-      createdAt: true,
-      verifiedAt: true,
-      student: { select: { name: true, username: true } },
-      verifier: { select: { name: true } },
-    },
-  });
-  res.json({ items });
-});
-
-const verifySchema = z.object({
-  approve: z.boolean(),
-  note: z.string().trim().max(150).optional(),
-});
-
-router.post('/topups/:id/verify', async (req, res) => {
-  const { approve, note } = verifySchema.parse(req.body);
-  const id = req.params.id;
-
-  // Saldo hanya bertambah jika pengajuan masih PENDING dan disetujui admin (atomik)
-  await prisma.$transaction(async (db) => {
-    const updated = await db.transaction.updateMany({
-      where: { id, type: 'TOPUP', status: 'PENDING' },
-      data: {
-        status: approve ? 'SUCCESS' : 'REJECTED',
-        verifiedById: req.user.id,
-        verifiedAt: new Date(),
-        adminNote: note || null,
+  const where = { type: 'TOPUP', status: status === 'ALL' ? undefined : status };
+  const [items, agg] = await Promise.all([
+    prisma.transaction.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+      select: {
+        id: true,
+        receiptNo: true,
+        status: true,
+        amount: true,
+        method: true,
+        reference: true,
+        createdAt: true,
+        verifiedAt: true,
+        student: { select: { name: true, username: true } },
       },
-    });
-    if (updated.count !== 1) throw new HttpError(409, 'Pengajuan tidak ditemukan atau sudah diproses');
-
-    if (approve) {
-      const t = await db.transaction.findUnique({ where: { id } });
-      await db.wallet.update({
-        where: { userId: t.studentId },
-        data: { balance: { increment: t.amount } },
-      });
-    }
-  });
-
-  res.json({ message: approve ? 'Top up disetujui' : 'Top up ditolak' });
+    }),
+    prisma.transaction.aggregate({ where, _sum: { amount: true }, _count: { _all: true } }),
+  ]);
+  res.json({ items, summary: { total: agg._sum.amount || 0, count: agg._count._all } });
 });
 
 // ---------- Laporan rekap ----------
@@ -72,53 +42,72 @@ const reportSchema = z.object({
   type: z.enum(['ALL', 'TOPUP', 'PAYMENT']).default('ALL'),
 });
 
-async function buildReport(query) {
+const VIEW_LIMIT = 500;
+const CSV_LIMIT = 50000;
+
+// Total dihitung di database (groupBy), sedangkan daftar baris dibatasi agar respons tetap ringan.
+async function buildReport(query, limit) {
   const q = reportSchema.parse(query);
-  const rows = await prisma.transaction.findMany({
-    where: {
-      status: 'SUCCESS',
-      type: q.type === 'ALL' ? undefined : q.type,
-      createdAt: dateRange(q.from, q.to),
-    },
-    orderBy: { createdAt: 'desc' },
-    take: 5000,
-    select: {
-      receiptNo: true,
-      type: true,
-      amount: true,
-      method: true,
-      createdAt: true,
-      student: { select: { name: true, username: true } },
-      merchant: { select: { name: true } },
-    },
-  });
+  const where = {
+    status: 'SUCCESS',
+    type: q.type === 'ALL' ? undefined : q.type,
+    createdAt: dateRange(q.from, q.to),
+  };
+  const sum = { _sum: { amount: true }, _count: { _all: true } };
+
+  const [rows, byType, byMerchantRaw] = await Promise.all([
+    prisma.transaction.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: {
+        receiptNo: true,
+        type: true,
+        amount: true,
+        method: true,
+        createdAt: true,
+        student: { select: { name: true, username: true } },
+        merchant: { select: { name: true } },
+      },
+    }),
+    prisma.transaction.groupBy({ by: ['type'], where, ...sum }),
+    q.type === 'TOPUP'
+      ? []
+      : prisma.transaction.groupBy({ by: ['merchantId'], where: { ...where, type: 'PAYMENT' }, ...sum }),
+  ]);
 
   const summary = { topupTotal: 0, topupCount: 0, paymentTotal: 0, paymentCount: 0 };
-  const merchants = new Map();
-  for (const r of rows) {
-    if (r.type === 'TOPUP') {
-      summary.topupTotal += r.amount;
-      summary.topupCount += 1;
+  for (const g of byType) {
+    if (g.type === 'TOPUP') {
+      summary.topupTotal = g._sum.amount || 0;
+      summary.topupCount = g._count._all;
     } else {
-      summary.paymentTotal += r.amount;
-      summary.paymentCount += 1;
-      const name = r.merchant?.name || '-';
-      const cur = merchants.get(name) || { name, total: 0, count: 0 };
-      cur.total += r.amount;
-      cur.count += 1;
-      merchants.set(name, cur);
+      summary.paymentTotal = g._sum.amount || 0;
+      summary.paymentCount = g._count._all;
     }
   }
-  const byMerchant = [...merchants.values()].sort((a, b) => b.total - a.total);
-  return { rows, summary, byMerchant };
+
+  const ids = byMerchantRaw.map((g) => g.merchantId).filter(Boolean);
+  const names = ids.length
+    ? await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })
+    : [];
+  const nameOf = new Map(names.map((u) => [u.id, u.name]));
+  const byMerchant = byMerchantRaw
+    .filter((g) => g.merchantId)
+    .map((g) => ({ name: nameOf.get(g.merchantId) || '-', total: g._sum.amount || 0, count: g._count._all }))
+    .sort((a, b) => b.total - a.total);
+
+  const totalRows = summary.topupCount + summary.paymentCount;
+  return { rows, summary, byMerchant, totalRows, truncated: totalRows > rows.length };
 }
 
 router.get('/report', async (req, res) => {
-  res.json(await buildReport(req.query));
+  res.json(await buildReport(req.query, VIEW_LIMIT));
 });
 
 router.get('/report.csv', async (req, res) => {
-  const { rows } = await buildReport(req.query);
+  const { rows } = await buildReport(req.query, CSV_LIMIT);
+  await logAdmin(req, 'REPORT_EXPORT', `from=${req.query.from || '-'} to=${req.query.to || '-'} type=${req.query.type || 'ALL'} baris=${rows.length}`);
   const head = ['No. Bukti', 'Waktu (WIB)', 'Jenis', 'Mahasiswa', 'Merchant', 'Metode', 'Jumlah (Rp)'];
   const lines = rows.map((r) =>
     [
@@ -162,6 +151,7 @@ router.post('/merchants', async (req, res) => {
     data: { username: data.username, name: data.name, passwordHash, role: 'MERCHANT', merchantCode: data.merchantCode },
     select: { id: true, name: true, username: true, merchantCode: true, createdAt: true },
   });
+  await logAdmin(req, 'MERCHANT_CREATE', `${m.username} (${m.merchantCode})`);
   res.status(201).json(m);
 });
 

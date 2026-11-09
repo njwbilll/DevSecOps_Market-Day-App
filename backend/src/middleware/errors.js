@@ -1,4 +1,3 @@
-import multer from 'multer';
 import { ZodError } from 'zod';
 import { HttpError } from '../utils.js';
 
@@ -13,11 +12,6 @@ export function errorHandler(err, req, res, next) {
     return res.status(400).json({
       error: 'Input tidak valid',
       details: err.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`),
-    });
-  }
-  if (err instanceof multer.MulterError) {
-    return res.status(400).json({
-      error: err.code === 'LIMIT_FILE_SIZE' ? 'Ukuran file maksimal 2 MB' : 'Unggahan tidak valid',
     });
   }
   if (err?.code === 'P2002') return res.status(409).json({ error: 'Data sudah terdaftar' });

@@ -4,6 +4,8 @@ services:
   nginx:
     build:
       context: ./frontend
+      labels:
+        - org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY:-local/market-day}
     container_name: md_nginx
     ports:
       - "80:80"
@@ -18,14 +20,13 @@ services:
   backend:
     build:
       context: ./backend
+      labels:
+        - org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY:-local/market-day}
     container_name: md_backend
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
       PORT: "3000"
-      UPLOAD_DIR: /app/uploads
-    volumes:
-      - uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -70,4 +71,3 @@ networks:
 
 volumes:
   pgdata:
-  uploads:

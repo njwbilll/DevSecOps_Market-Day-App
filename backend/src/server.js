@@ -1,7 +1,6 @@
 import express from 'express';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import fs from 'node:fs/promises';
 import { config } from './config.js';
 import { authenticate, requireRole } from './middleware/auth.js';
 import { errorHandler, notFound } from './middleware/errors.js';
@@ -9,14 +8,14 @@ import authRoutes from './routes/auth.js';
 import studentRoutes from './routes/student.js';
 import merchantRoutes from './routes/merchant.js';
 import adminRoutes from './routes/admin.js';
-
-await fs.mkdir(config.uploadDir, { recursive: true });
+import webhookRoutes from './routes/webhooks.js';
 
 const app = express();
 app.set('trust proxy', 1); // di belakang Nginx
 app.disable('x-powered-by');
 app.use(helmet());
-app.use(express.json({ limit: '10kb' }));
+// rawBody dipakai untuk memverifikasi tanda tangan webhook
+app.use(express.json({ limit: '10kb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 
 app.use(
   '/api',
@@ -36,6 +35,7 @@ app.use(
   }),
   authRoutes,
 );
+app.use('/api/webhooks', webhookRoutes);
 app.use('/api/admin', authenticate, requireRole('ADMIN'), adminRoutes);
 app.use('/api/merchant', authenticate, requireRole('MERCHANT'), merchantRoutes);
 app.use('/api', authenticate, studentRoutes);

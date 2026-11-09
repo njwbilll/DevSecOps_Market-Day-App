@@ -78,6 +78,9 @@ export default function AdminReport() {
 
       <section className="card card-white">
         <div className="card-head"><h2>Rincian transaksi</h2></div>
+        {data?.truncated && (
+          <p className="note">Menampilkan {data.rows.length} dari {data.totalRows} transaksi terbaru. Total di atas dihitung dari seluruh transaksi. Unduh CSV untuk data lengkap.</p>
+        )}
         {!data ? <div className="img-skeleton" /> : data.rows.length === 0 ? (
           <Empty title="Tidak ada data" text="Belum ada transaksi berhasil pada filter ini." />
         ) : (

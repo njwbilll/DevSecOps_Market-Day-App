@@ -33,6 +33,9 @@ export default function MerchantLedger() {
 
       <section className="card card-white">
         <Alert>{error}</Alert>
+        {data && data.summary.count > data.items.length && (
+          <p className="note">Menampilkan {data.items.length} dari {data.summary.count} transaksi terbaru. Total di atas dihitung dari seluruh transaksi.</p>
+        )}
         {!data ? <div className="img-skeleton" /> : data.items.length === 0 ? (
           <Empty title="Tidak ada transaksi" text="Belum ada pembayaran pada rentang tanggal ini." />
         ) : (

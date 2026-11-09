@@ -10,7 +10,7 @@ import Pay from './pages/student/Pay.jsx';
 import History from './pages/student/History.jsx';
 import MerchantDashboard from './pages/merchant/Dashboard.jsx';
 import MerchantLedger from './pages/merchant/Ledger.jsx';
-import AdminVerify from './pages/admin/Verify.jsx';
+import AdminTopupBook from './pages/admin/TopupBook.jsx';
 import AdminReport from './pages/admin/Report.jsx';
 import AdminMerchants from './pages/admin/Merchants.jsx';
 
@@ -51,7 +51,7 @@ export default function App() {
       <Route path="/merchant" element={<Private roles={M}><MerchantDashboard /></Private>} />
       <Route path="/merchant/pembukuan" element={<Private roles={M}><MerchantLedger /></Private>} />
 
-      <Route path="/admin" element={<Private roles={A}><AdminVerify /></Private>} />
+      <Route path="/admin" element={<Private roles={A}><AdminTopupBook /></Private>} />
       <Route path="/admin/laporan" element={<Private roles={A}><AdminReport /></Private>} />
       <Route path="/admin/merchant" element={<Private roles={A}><AdminMerchants /></Private>} />
 

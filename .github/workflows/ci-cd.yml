@@ -1,0 +1,138 @@
+name: ci-cd
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Pull request yang lebih baru membatalkan yang lama. Run pada main tidak pernah dibatalkan agar deploy tidak terputus.
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # SAST: hanya melapor ke tab Security (sesuai PRD). Pada repositori privat dibutuhkan GitHub Advanced Security.
+  sast:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+
+  # Build, pemindaian Trivy (menghentikan pipeline), push image ke GHCR, lalu DAST (hanya melapor).
+  build-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      owner: ${{ steps.meta.outputs.owner }}
+    env:
+      PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Siapkan variabel
+        id: meta
+        run: |
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          cp .env.example .env
+          sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/" .env
+
+      - name: Build image
+        run: docker compose build
+
+      - name: Trivy, image backend
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: market-day-backend
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Trivy, image nginx
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: market-day-nginx
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Push image yang lolos pemindaian ke GHCR
+        if: env.PUSH == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ steps.meta.outputs.owner }}
+          SHA: ${{ github.sha }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for svc in backend nginx; do
+            for tag in "$SHA" latest; do
+              docker tag "market-day-$svc" "ghcr.io/$OWNER/market-day-$svc:$tag"
+              docker push "ghcr.io/$OWNER/market-day-$svc:$tag"
+            done
+          done
+
+      - name: DAST dengan OWASP ZAP (hanya melapor)
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          docker compose up -d
+          for _ in $(seq 1 40); do curl -ksf https://localhost/api/health >/dev/null && break; sleep 3; done
+          mkdir -p zap-report && chmod 777 zap-report
+          docker run --rm --network host -v "$PWD/zap-report:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py -t https://localhost -r report.html -I
+
+      - name: Unggah laporan ZAP
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zap-report
+          path: zap-report
+          if-no-files-found: ignore
+
+      - name: Hentikan aplikasi uji
+        if: always()
+        run: docker compose down -v
+
+  # Deploy otomatis ke VM lewat runner self-hosted. Hanya untuk push ke main dan hanya jika Trivy lolos.
+  deploy:
+    needs: build-scan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, marketday-vm]
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Login ke GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Salin berkas deploy
+        run: |
+          install -m 644 docker-compose.prod.yml /opt/market-day/docker-compose.prod.yml
+          install -m 755 scripts/deploy.sh /opt/market-day/deploy.sh
+
+      - name: Deploy dan pemeriksaan kesehatan
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          GHCR_OWNER: ${{ needs.build-scan.outputs.owner }}
+        run: /opt/market-day/deploy.sh

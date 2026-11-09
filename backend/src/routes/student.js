@@ -1,21 +1,14 @@
 import { Router } from 'express';
-import multer from 'multer';
 import { z } from 'zod';
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import crypto from 'node:crypto';
 import { prisma } from '../db.js';
 import { config } from '../config.js';
+import { settleTopup } from '../services/topup.js';
+import { createCharge } from '../services/gateway.js';
 import { requireRole } from '../middleware/auth.js';
 import { HttpError, dateRange, receiptNo } from '../utils.js';
 
 const router = Router();
 const student = requireRole('MAHASISWA');
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024, files: 1, fields: 5 },
-});
 
 const txSelect = {
   id: true,
@@ -24,21 +17,14 @@ const txSelect = {
   status: true,
   amount: true,
   method: true,
+  reference: true,
+  paymentCode: true,
   note: true,
   adminNote: true,
   createdAt: true,
   verifiedAt: true,
   merchant: { select: { name: true, merchantCode: true } },
 };
-
-// Validasi tipe file berdasarkan isi (magic bytes), bukan ekstensi dari pengguna
-function detectImageExt(buf) {
-  if (buf.length < 12) return null;
-  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return '.jpg';
-  if (buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return '.png';
-  if (buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP') return '.webp';
-  return null;
-}
 
 // Profil dan saldo (semua role)
 router.get('/me', async (req, res) => {
@@ -70,7 +56,9 @@ router.get('/merchants/code/:code', student, async (req, res) => {
   res.json(m);
 });
 
-// ---------- Top up ----------
+// ---------- Top up otomatis ----------
+// Pembeli membayar lewat bank atau e-wallet. Saldo bertambah dan tercatat otomatis
+// saat payment gateway mengirim konfirmasi (webhook). Tidak ada verifikasi manual admin.
 const topupSchema = z.object({
   amount: z.coerce.number().int('Nominal harus bilangan bulat').min(10000, 'Minimal top up Rp10.000').max(1000000, 'Maksimal top up Rp1.000.000'),
   method: z.enum(['BANK', 'EWALLET']),
@@ -83,51 +71,53 @@ router.get('/topups', student, async (req, res) => {
     take: 30,
     select: txSelect,
   });
-  res.json({ items });
+  res.json({ items, sandbox: config.paymentMode === 'sandbox' });
 });
 
-router.post('/topups', student, upload.single('proof'), async (req, res) => {
+router.post('/topups', student, async (req, res) => {
   const data = topupSchema.parse(req.body);
-  if (!req.file) throw new HttpError(400, 'Bukti transfer wajib diunggah');
-  const ext = detectImageExt(req.file.buffer);
-  if (!ext) throw new HttpError(400, 'File harus berupa gambar JPG, PNG, atau WEBP');
+
+  // Tagihan yang tidak dibayar lebih dari 24 jam dianggap kedaluwarsa
+  await prisma.transaction.updateMany({
+    where: { studentId: req.user.id, type: 'TOPUP', status: 'PENDING', createdAt: { lt: new Date(Date.now() - 86400000) } },
+    data: { status: 'REJECTED' },
+  });
 
   const pending = await prisma.transaction.count({
     where: { studentId: req.user.id, type: 'TOPUP', status: 'PENDING' },
   });
-  if (pending >= 5) throw new HttpError(429, 'Masih ada 5 pengajuan yang menunggu verifikasi');
+  if (pending >= 3) throw new HttpError(429, 'Masih ada 3 tagihan top up yang belum dibayar');
 
-  const fileName = `${crypto.randomUUID()}${ext}`;
-  const filePath = path.resolve(config.uploadDir, fileName);
-  await fs.writeFile(filePath, req.file.buffer, { mode: 0o640 });
+  // Permintaan tagihan ke payment gateway, balasannya berisi kode pembayaran
+  const receipt = receiptNo();
+  const charge = await createCharge({ amount: data.amount, method: data.method, orderId: receipt });
 
-  try {
-    const tx = await prisma.transaction.create({
-      data: {
-        receiptNo: receiptNo(),
-        type: 'TOPUP',
-        status: 'PENDING',
-        amount: data.amount,
-        method: data.method,
-        proofPath: fileName,
-        studentId: req.user.id,
-      },
-      select: txSelect,
-    });
-    res.status(201).json(tx);
-  } catch (e) {
-    await fs.unlink(filePath).catch(() => {});
-    throw e;
-  }
+  const tx = await prisma.transaction.create({
+    data: {
+      receiptNo: receipt,
+      type: 'TOPUP',
+      status: 'PENDING',
+      amount: data.amount,
+      method: data.method,
+      reference: charge.reference,
+      paymentCode: charge.paymentCode,
+      studentId: req.user.id,
+    },
+    select: txSelect,
+  });
+  res.status(201).json({ ...tx, sandbox: config.paymentMode === 'sandbox' });
 });
 
-// Bukti transfer hanya dapat dilihat pemilik atau admin
-router.get('/topups/:id/proof', async (req, res) => {
-  const t = await prisma.transaction.findFirst({ where: { id: req.params.id, type: 'TOPUP' } });
-  if (!t || !t.proofPath) throw new HttpError(404, 'Bukti tidak ditemukan');
-  if (req.user.role !== 'ADMIN' && t.studentId !== req.user.id) throw new HttpError(403, 'Akses ditolak');
-  res.setHeader('Cache-Control', 'private, max-age=300');
-  res.sendFile(path.resolve(config.uploadDir, path.basename(t.proofPath)));
+// Hanya untuk mode sandbox: meniru konfirmasi dari payment gateway
+router.post('/topups/:id/simulate-pay', student, async (req, res) => {
+  if (config.paymentMode !== 'sandbox') throw new HttpError(404, 'Endpoint tidak ditemukan');
+  const t = await prisma.transaction.findFirst({
+    where: { id: req.params.id, type: 'TOPUP', studentId: req.user.id },
+  });
+  if (!t || !t.reference) throw new HttpError(404, 'Tagihan tidak ditemukan');
+  const r = await settleTopup(t.reference);
+  if (!r.settled) throw new HttpError(409, 'Tagihan sudah diproses');
+  res.json({ message: 'Pembayaran berhasil disimulasikan' });
 });
 
 // ---------- Pembayaran ----------
