@@ -1,0 +1,73 @@
+name: market-day
+
+services:
+  nginx:
+    build:
+      context: ./frontend
+    container_name: md_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+    networks:
+      frontend_net:
+        ipv4_address: 172.20.0.10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    container_name: md_backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      PORT: "3000"
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      frontend_net:
+        ipv4_address: 172.20.0.20
+      data_net:
+        ipv4_address: 172.20.1.20
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: md_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      data_net:
+        ipv4_address: 172.20.1.30
+    restart: unless-stopped
+
+networks:
+  frontend_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+  data_net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.20.1.0/24
+
+volumes:
+  pgdata:
+  uploads:

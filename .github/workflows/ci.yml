@@ -1,0 +1,74 @@
+name: ci-devsecops
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Siapkan .env untuk pipeline
+        run: |
+          cp .env.example .env
+          sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/" .env
+      - name: Build image Docker
+        run: docker compose build
+
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v3
+
+  trivy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Siapkan .env
+        run: cp .env.example .env
+      - run: docker compose build
+      - name: Scan image backend
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: market-day-backend
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+      - name: Scan image nginx
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: market-day-nginx
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+  dast:
+    needs: [build, sast, trivy]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Jalankan aplikasi
+        run: |
+          cp .env.example .env
+          sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/" .env
+          docker compose up -d --build
+          for i in $(seq 1 30); do curl -ksf https://localhost/api/health && break; sleep 3; done
+      - name: OWASP ZAP baseline
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: https://localhost
+          cmd_options: -I
+      - name: Hentikan aplikasi
+        if: always()
+        run: docker compose down -v
