@@ -68,6 +68,8 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
+          # Sertifikat self-signed demo dibuat saat build (frontend/Dockerfile), bukan secret produksi.
+          skip-files: /etc/nginx/certs/selfsigned.key
 
       - name: Push image yang lolos pemindaian ke GHCR
         if: env.PUSH == 'true'
