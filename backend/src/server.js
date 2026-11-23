@@ -43,4 +43,4 @@ app.use('/api', authenticate, studentRoutes);
 app.use(notFound);
 app.use(errorHandler);
 
-app.listen(config.port, () => console.log(`Market Day API berjalan di port ${config.port}`));
+app.listen(3001, () => console.log(`Market Day API berjalan di port 3001`));
