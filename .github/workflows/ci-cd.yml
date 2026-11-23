@@ -2,7 +2,7 @@ name: ci-cd
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/devsecops-pipeline]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  # SAST: hanya melapor ke tab Security (sesuai PRD). Pada repositori privat dibutuhkan GitHub Advanced Security.
+  # 1. SAST (CodeQL): melapor ke tab Security -> Code scanning.
   sast:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -30,8 +30,84 @@ jobs:
           languages: javascript-typescript
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
 
-  # Build, pemindaian Trivy (menghentikan pipeline), push image ke GHCR, lalu DAST (hanya melapor).
+  # 2. SAST Quality Gate (Semgrep): blocking (gagal otomatis jika ada temuan High/Critical).
+  semgrep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Semgrep SAST (Blocking High/Critical)
+        run: |
+          docker run --rm -v "$PWD:/src" semgrep/semgrep:latest \
+            semgrep scan --config p/javascript --config p/owasp-top-ten \
+            --severity ERROR --error /src/backend/src /src/frontend/src
+
+  # 3. SCA (npm audit + Trivy filesystem) dengan cache npm untuk efisiensi.
+  sca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js dengan cache npm
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Audit dependensi backend (npm audit)
+        working-directory: backend
+        run: npm audit --audit-level=high
+
+      - name: Audit dependensi frontend (npm audit)
+        working-directory: frontend
+        run: npm audit --audit-level=high
+
+      - name: Trivy filesystem scan (SCA)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          severity: "HIGH,CRITICAL"
+          exit-code: "1"
+          ignore-unfixed: true
+
+  # 4. Secrets Detection (Gitleaks): blocking jika ada API key / secret di repo.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks secret scan
+        run: |
+          docker run --rm -v "$PWD:/path" zricethezav/gitleaks:latest \
+            detect --source="/path" --verbose --redact
+
+  # 5. IaC Security (Checkov untuk Dockerfile & workflow, KICS untuk docker-compose).
+  iac:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Checkov (Dockerfile & GitHub Workflows)
+        run: |
+          docker run --rm -v "$PWD:/src" bridgecrew/checkov:latest \
+            -f /src/backend/Dockerfile -f /src/frontend/Dockerfile \
+            -d /src/.github/workflows --compact
+
+      - name: KICS (docker-compose)
+        run: |
+          docker run --rm -v "$PWD:/path" checkmarx/kics:latest scan \
+            -p /path/docker-compose.yml -p /path/docker-compose.prod.yml \
+            --no-progress --fail-on HIGH,CRITICAL
+
+  # 6. Build (dengan Docker layer cache), Trivy image scan, push ke GHCR, lalu DAST (OWASP ZAP).
   build-scan:
+    needs: [semgrep, sca, secrets]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -50,8 +126,26 @@ jobs:
           cp .env.example .env
           sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/" .env
 
-      - name: Build image
-        run: docker compose build
+      - name: Setup Docker Buildx (untuk layer cache)
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image backend (dengan cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          load: true
+          tags: market-day-backend:latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build image nginx (dengan cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          load: true
+          tags: market-day-nginx:latest
+          cache-from: type=gha,scope=nginx
+          cache-to: type=gha,mode=max,scope=nginx
 
       - name: Trivy, image backend
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -86,11 +180,10 @@ jobs:
             done
           done
 
-      - name: DAST dengan OWASP ZAP (hanya melapor)
-        continue-on-error: true
+      - name: DAST dengan OWASP ZAP (quality gate)
         timeout-minutes: 15
         run: |
-          docker compose up -d
+          docker compose up -d --no-build
           for _ in $(seq 1 40); do curl -ksf https://localhost/api/health >/dev/null && break; sleep 3; done
           mkdir -p zap-report && chmod 777 zap-report
           docker run --rm --network host -v "$PWD/zap-report:/zap/wrk:rw" \
@@ -108,7 +201,7 @@ jobs:
         if: always()
         run: docker compose down -v
 
-  # Deploy otomatis ke VM lewat runner self-hosted. Hanya untuk push ke main dan hanya jika Trivy lolos.
+  # 7. Deploy otomatis ke VM lewat runner self-hosted. Hanya untuk push ke main dan hanya jika semua gate lolos.
   deploy:
     needs: build-scan
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
