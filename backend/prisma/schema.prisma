@@ -8,6 +8,77 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id           String        @id @default(uuid())
+  username     String        @unique
+  name         String
+  passwordHash String
+  role         Role
+  merchantCode String?       @unique
+  createdAt    DateTime      @default(now())
+  merchantTx   Transaction[] @relation("MerchantTx")
+  studentTx    Transaction[] @relation("StudentTx")
+  verifiedTx   Transaction[] @relation("VerifierTx")
+  wallet       Wallet?
+}
+
+model Wallet {
+  id      String @id @default(uuid())
+  userId  String @unique
+  balance Int    @default(0)
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Transaction {
+  id           String    @id @default(uuid())
+  receiptNo    String    @unique
+  type         TxType
+  status       TxStatus
+  amount       Int
+  method       String?
+  reference    String?   @unique
+  paymentCode  String?
+  note         String?
+  adminNote    String?
+  proofPath    String?
+  studentId    String
+  merchantId   String?
+  verifiedById String?
+  verifiedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  merchant     User?     @relation("MerchantTx", fields: [merchantId], references: [id])
+  student      User      @relation("StudentTx", fields: [studentId], references: [id])
+  verifier     User?     @relation("VerifierTx", fields: [verifiedById], references: [id])
+
+  @@index([studentId, createdAt])
+  @@index([merchantId, createdAt])
+  @@index([type, status])
+}
+
+model WebhookLog {
+  id             String   @id @default(uuid())
+  createdAt      DateTime @default(now())
+  ip             String
+  signatureValid Boolean
+  reference      String?
+  rawBody        String
+  result         String
+
+  @@index([createdAt])
+  @@index([reference])
+}
+
+model AdminLog {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  adminId   String
+  action    String
+  detail    String?
+  ip        String?
+
+  @@index([createdAt])
+}
+
 enum Role {
   MAHASISWA
   MERCHANT
@@ -23,81 +94,4 @@ enum TxStatus {
   PENDING
   SUCCESS
   REJECTED
-}
-
-// D1 Akun & Role
-model User {
-  id           String   @id @default(uuid())
-  username     String   @unique
-  name         String
-  passwordHash String
-  role         Role
-  merchantCode String?  @unique
-  createdAt    DateTime @default(now())
-
-  wallet     Wallet?
-  studentTx  Transaction[] @relation("StudentTx")
-  merchantTx Transaction[] @relation("MerchantTx")
-  verifiedTx Transaction[] @relation("VerifierTx")
-}
-
-// D2 Dompet & Transaksi (saldo hanya disimpan di sini)
-model Wallet {
-  id      String @id @default(uuid())
-  userId  String @unique
-  balance Int    @default(0)
-  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model Transaction {
-  id           String    @id @default(uuid())
-  receiptNo    String    @unique
-  type         TxType
-  status       TxStatus
-  amount       Int
-  method       String?
-  reference    String?   @unique // ID tagihan di payment gateway (dipakai webhook untuk mencocokkan)
-  paymentCode  String?   // kode pembayaran yang ditampilkan: virtual account atau kode e-wallet
-  note         String?
-  adminNote    String?
-  proofPath    String? // tidak dipakai lagi
-  studentId    String
-  merchantId   String?
-  verifiedById String?
-  verifiedAt   DateTime? // waktu pembayaran terkonfirmasi otomatis
-  createdAt    DateTime  @default(now())
-
-  student  User  @relation("StudentTx", fields: [studentId], references: [id])
-  merchant User? @relation("MerchantTx", fields: [merchantId], references: [id])
-  verifier User? @relation("VerifierTx", fields: [verifiedById], references: [id])
-
-  @@index([studentId, createdAt])
-  @@index([merchantId, createdAt])
-  @@index([type, status])
-}
-
-// Audit log webhook payment gateway (append-only, dijaga trigger di hardening.sql)
-model WebhookLog {
-  id             String   @id @default(uuid())
-  createdAt      DateTime @default(now())
-  ip             String
-  signatureValid Boolean
-  reference      String?
-  rawBody        String
-  result         String
-
-  @@index([createdAt])
-  @@index([reference])
-}
-
-// Audit log aksi sensitif admin (append-only)
-model AdminLog {
-  id        String   @id @default(uuid())
-  createdAt DateTime @default(now())
-  adminId   String
-  action    String
-  detail    String?
-  ip        String?
-
-  @@index([createdAt])
 }

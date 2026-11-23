@@ -1,0 +1,9 @@
+apiVersion: 1
+
+providers:
+  - name: market-day
+    folder: Market Day
+    type: file
+    disableDeletion: true
+    options:
+      path: /var/lib/grafana/dashboards

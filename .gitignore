@@ -2,3 +2,7 @@ node_modules
 dist
 .env
 uploads
+backups/
+monitoring/.env.monitoring
+monitoring/secrets/*
+!monitoring/secrets/.gitkeep

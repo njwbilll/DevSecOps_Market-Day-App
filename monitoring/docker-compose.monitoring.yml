@@ -1,0 +1,128 @@
+# Tumpukan observabilitas Market Day: logging (Loki, Promtail), monitoring (Prometheus, Alertmanager,
+# exporter), dan dashboard (Grafana). Dijalankan terpisah dari aplikasi:
+#   docker compose --env-file .env.monitoring -f docker-compose.monitoring.yml up -d
+name: market-day-monitoring
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    container_name: md_prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:9090:9090"
+    networks: [monitoring]
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.2
+    container_name: md_alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./secrets:/etc/alertmanager/secrets:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:9093:9093"
+    networks: [monitoring]
+    restart: unless-stopped
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.29.0
+    container_name: md_blackbox
+    command:
+      - --config.file=/etc/blackbox/blackbox.yml
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    networks: [monitoring, app_frontend] # app_frontend: agar dapat memeriksa Nginx dan Backend
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.13.0
+    container_name: md_node_exporter
+    command:
+      - --path.rootfs=/host
+    volumes:
+      - /:/host:ro,rslave
+    networks: [monitoring]
+    restart: unless-stopped
+
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    container_name: md_cadvisor
+    privileged: true # membaca statistik kontainer dari host
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks: [monitoring]
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.7.9
+    container_name: md_loki
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - ./loki/rules:/loki/rules/fake:ro # aturan alert berbasis log (tenant bawaan: fake)
+      - loki_data:/loki
+    networks: [monitoring]
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.5.0
+    container_name: md_promtail
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - ./promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro # menemukan kontainer md_*
+      - /var/log:/var/log:ro # auth.log, ufw.log, suricata
+      - promtail_positions:/positions
+    networks: [monitoring]
+    depends_on: [loki]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.6
+    container_name: md_grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?isi GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:?isi GRAFANA_DB_PASSWORD}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:3001:3000"
+    networks: [monitoring, app_data] # app_data: membaca tabel audit lewat akun database read-only
+    depends_on: [prometheus, loki]
+    restart: unless-stopped
+
+networks:
+  monitoring:
+  app_frontend:
+    external: true
+    name: market-day_frontend_net
+  app_data:
+    external: true
+    name: market-day_data_net
+
+volumes:
+  prometheus_data:
+  alertmanager_data:
+  loki_data:
+  promtail_positions:
+  grafana_data:

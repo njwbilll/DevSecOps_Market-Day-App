@@ -1,0 +1,50 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /positions/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Log kontainer md_nginx, md_backend, md_postgres
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+    relabel_configs:
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/md_.*"
+        action: keep
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(md_.*)"
+        target_label: container
+      - target_label: job
+        replacement: docker
+    pipeline_stages:
+      - match:
+          selector: '{container="md_nginx"}'
+          stages:
+            - regex:
+                expression: '^(?P<ip>\S+) \S+ \S+ \[[^\]]+\] "(?P<method>\S+) (?P<path>\S+) [^"]*" (?P<status>\d{3}) (?P<bytes>\d+)'
+            - labels:
+                status:
+                method:
+
+  # Log VM: percobaan SSH dan paket yang diblokir firewall
+  - job_name: varlogs
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: varlogs
+          __path__: /var/log/{auth.log,ufw.log}
+
+  # Opsional: peringatan Suricata (jika dipasang)
+  - job_name: suricata
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: suricata
+          __path__: /var/log/suricata/fast.log

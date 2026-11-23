@@ -1,0 +1,34 @@
+groups:
+  - name: market-day-keamanan
+    rules:
+      - alert: LoginGagalBeruntun
+        expr: sum(count_over_time({container="md_nginx", status="401"} |= "/api/auth/login" [5m])) > 10
+        labels:
+          severity: warning
+        annotations:
+          summary: "Percobaan login gagal berulang"
+          description: "Lebih dari 10 respons 401 pada /api/auth/login dalam 5 menit. Kemungkinan brute force."
+
+      - alert: RateLimitNginxTerpicu
+        expr: sum(count_over_time({container="md_nginx"} |= "limiting requests" [5m])) > 20
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rate limit Nginx sering terpicu"
+          description: "Lebih dari 20 permintaan ditolak rate limit dalam 5 menit. Kemungkinan pembanjiran."
+
+      - alert: AksesDitolak403
+        expr: sum(count_over_time({container="md_nginx", status="403"} [5m])) > 10
+        labels:
+          severity: warning
+        annotations:
+          summary: "Banyak akses ditolak (403)"
+          description: "Lebih dari 10 respons 403 dalam 5 menit. Kemungkinan percobaan akses di luar hak akses."
+
+      - alert: SSHGagalBeruntun
+        expr: sum(count_over_time({job="varlogs", filename="/var/log/auth.log"} |= "Failed password" [5m])) > 5
+        labels:
+          severity: critical
+        annotations:
+          summary: "Login SSH gagal berulang di VM"
+          description: "Lebih dari 5 kegagalan password SSH dalam 5 menit."

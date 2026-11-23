@@ -1,0 +1,22 @@
+route:
+  receiver: telegram
+  group_by: [alertname]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 1h
+
+receivers:
+  - name: telegram
+    telegram_configs:
+      - bot_token_file: /etc/alertmanager/secrets/telegram_token
+        chat_id: 123456789 # GANTI dengan chat id kamu (lihat panduan)
+        send_resolved: true
+        message: |-
+          {{ range .Alerts }}[{{ .Status | toUpper }}] {{ .Labels.alertname }}
+          {{ .Annotations.summary }}
+          {{ .Annotations.description }}
+          {{ end }}
+
+# Alternatif Discord: ganti blok telegram_configs di atas dengan
+#   discord_configs:
+#     - webhook_url_file: /etc/alertmanager/secrets/discord_webhook

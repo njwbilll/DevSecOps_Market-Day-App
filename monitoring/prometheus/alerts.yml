@@ -1,0 +1,66 @@
+groups:
+  - name: market-day-availability
+    rules:
+      - alert: NginxDown
+        expr: probe_success{job="blackbox-nginx"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Aplikasi tidak dapat diakses lewat Nginx"
+          description: "Pemeriksaan /api/health lewat Nginx gagal selama lebih dari 1 menit."
+
+      - alert: BackendDown
+        expr: probe_success{job="blackbox-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend tidak merespons"
+          description: "Pemeriksaan /api/health langsung ke Backend gagal selama lebih dari 1 menit."
+
+      - alert: ResponsLambat
+        expr: probe_duration_seconds{job="blackbox-nginx"} > 2
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Respons aplikasi lambat"
+          description: "Waktu respons /api/health di atas 2 detik selama 3 menit."
+
+      - alert: KontainerRestart
+        expr: changes(container_start_time_seconds{name=~"md_.*"}[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kontainer {{ $labels.name }} dimulai ulang"
+          description: "Kontainer {{ $labels.name }} restart dalam 10 menit terakhir."
+
+  - name: market-day-resources
+    rules:
+      - alert: CPUTinggi
+        expr: 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pemakaian CPU VM tinggi"
+          description: "CPU di atas 85 persen selama 5 menit."
+
+      - alert: MemoriTinggi
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pemakaian memori VM tinggi"
+          description: "Memori terpakai di atas 90 persen selama 5 menit."
+
+      - alert: DiskHampirPenuh
+        expr: node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} < 0.10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ruang disk VM tersisa kurang dari 10 persen"
+          description: "Bebaskan ruang disk sebelum database atau log gagal ditulis."

@@ -1,0 +1,29 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+
+  # Jejak audit di database (tabel WebhookLog dan AdminLog) lewat akun read-only
+  - name: Audit DB
+    type: postgres
+    uid: postgres-audit
+    access: proxy
+    url: md_postgres:5432
+    user: grafana_ro
+    secureJsonData:
+      password: ${GRAFANA_DB_PASSWORD}
+    jsonData:
+      database: marketday
+      sslmode: disable
+      postgresVersion: 1600
